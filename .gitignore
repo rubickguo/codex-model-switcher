@@ -6,4 +6,8 @@ dist/
 *.zip
 *.sha256
 Sources/.!*
-
+node_modules/
+scratch/
+*.bak
+*.pre-restore.bak
+*.app/

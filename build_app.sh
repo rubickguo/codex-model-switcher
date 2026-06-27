@@ -1,57 +1,65 @@
 #!/usr/bin/env bash
+# Codex Model Switcher - App Build Script
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
-BUILD_DIR="$ROOT/build"
-APP="$BUILD_DIR/Codex 模型切换器.app"
-INSTALL_APP="${INSTALL_APP:-$HOME/Applications/Codex 模型切换器.app}"
-LEGACY_APP="$HOME/Applications/Codex Model Switcher.app"
-CONTENTS="$APP/Contents"
-MACOS="$CONTENTS/MacOS"
-RESOURCES="$CONTENTS/Resources"
-ICON_SOURCE="$ROOT/Assets/AppIcon.png"
-ICON_PREPARE="$ROOT/Tools/PrepareAppIcon.swift"
-ICON_WORK="$BUILD_DIR/icon"
-ICONSET="$ICON_WORK/AppIcon.iconset"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_NAME="Codex Model Switcher"
+APP_BUNDLE="$PROJECT_DIR/$APP_NAME.app"
+LAUNCHER_SRC="$PROJECT_DIR/launcher.applescript"
 
-osascript -e 'tell application id "local.codex.model-switcher" to quit' >/dev/null 2>&1 || true
-osascript -e 'tell application id "com.openai.codex.switcher" to quit' >/dev/null 2>&1 || true
-pkill -x CodexModelSwitcher >/dev/null 2>&1 || true
+echo "========================================================================"
+echo "          正在构建 self-contained macOS 应用程序 (.app)..."
+echo "========================================================================"
 
-rm -rf "$BUILD_DIR" "$INSTALL_APP" "$LEGACY_APP"
-mkdir -p "$MACOS" "$RESOURCES" "$ICONSET" "$(dirname "$INSTALL_APP")"
+# Write AppleScript source code
+cat << 'APPLESCRIPT' > "$LAUNCHER_SRC"
+set appPath to POSIX path of (path to me)
+if appPath ends with "/" then
+  set resourcePath to appPath & "Contents/Resources"
+else
+  set resourcePath to appPath & "/Contents/Resources"
+end if
 
-swift "$ICON_PREPARE" "$ICON_SOURCE" "$ICON_WORK/AppIcon.png"
+-- Start any existing instances of our server running on port 18788
+try
+  do shell script "lsof -t -i :18788 | xargs kill -9"
+end try
 
-sips -z 16 16 "$ICON_WORK/AppIcon.png" --out "$ICONSET/icon_16x16.png" >/dev/null
-sips -z 32 32 "$ICON_WORK/AppIcon.png" --out "$ICONSET/icon_16x16@2x.png" >/dev/null
-sips -z 32 32 "$ICON_WORK/AppIcon.png" --out "$ICONSET/icon_32x32.png" >/dev/null
-sips -z 64 64 "$ICON_WORK/AppIcon.png" --out "$ICONSET/icon_32x32@2x.png" >/dev/null
-sips -z 128 128 "$ICON_WORK/AppIcon.png" --out "$ICONSET/icon_128x128.png" >/dev/null
-sips -z 256 256 "$ICON_WORK/AppIcon.png" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
-sips -z 256 256 "$ICON_WORK/AppIcon.png" --out "$ICONSET/icon_256x256.png" >/dev/null
-sips -z 512 512 "$ICON_WORK/AppIcon.png" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
-sips -z 512 512 "$ICON_WORK/AppIcon.png" --out "$ICONSET/icon_512x512.png" >/dev/null
-sips -z 1024 1024 "$ICON_WORK/AppIcon.png" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
-iconutil -c icns "$ICONSET" -o "$RESOURCES/AppIcon.icns"
+-- Launch Electron directly using the bundled binary via open
+try
+  set electronApp to resourcePath & "/node_modules/electron/dist/Electron.app"
+  set mainJs to resourcePath & "/main.js"
+  
+  -- Open the Electron app bundle passing the script path as args
+  do shell script "open -a " & quoted form of electronApp & " --args " & quoted form of mainJs
+on error err
+  display dialog "启动失败: " & err buttons {"好"} default button "好" with title "Codex Model Switcher"
+end try
+APPLESCRIPT
 
-swiftc \
-  -O \
-  -parse-as-library \
-  "$ROOT/Sources/CodexModelSwitcher.swift" \
-  -o "$MACOS/CodexModelSwitcher" \
-  -framework SwiftUI \
-  -framework AppKit
+# Compile the AppleScript source into an .app bundle
+echo "正在编译 AppleScript..."
+rm -rf "$APP_BUNDLE"
+osacompile -o "$APP_BUNDLE" "$LAUNCHER_SRC"
 
-cp "$ROOT/Info.plist" "$CONTENTS/Info.plist"
-if [ -f "$ROOT/provider-safe-guard.mjs" ]; then
-    cp "$ROOT/provider-safe-guard.mjs" "$RESOURCES/"
+# Copy project files into App Resources folder
+echo "正在将项目文件打包进 App 内部..."
+RESOURCES_DIR="$APP_BUNDLE/Contents/Resources"
+mkdir -p "$RESOURCES_DIR/public"
+mkdir -p "$RESOURCES_DIR/scripts"
+
+cp "$PROJECT_DIR/main.js" "$PROJECT_DIR/package.json" "$RESOURCES_DIR/"
+cp -R "$PROJECT_DIR/node_modules" "$RESOURCES_DIR/"
+cp -R "$PROJECT_DIR/public/" "$RESOURCES_DIR/public/"
+if [ -f "$PROJECT_DIR/scripts/provider-safe-guard.mjs" ]; then
+    cp "$PROJECT_DIR/scripts/provider-safe-guard.mjs" "$RESOURCES_DIR/scripts/"
 fi
-chmod +x "$MACOS/CodexModelSwitcher"
-codesign --force --sign - "$APP" >/dev/null
 
-cp -R "$APP" "$INSTALL_APP"
-codesign --verify --deep --strict "$INSTALL_APP"
-rm -rf "$APP"
+# Clean up temp applescript file
+rm -f "$LAUNCHER_SRC"
 
-echo "$INSTALL_APP"
+echo "========================================================================"
+echo "构建成功! 应用程序已生成在:"
+echo "👉 $APP_BUNDLE"
+echo "您可以直接双击运行，或将其拖动到 /Applications 目录使用。"
+echo "========================================================================"

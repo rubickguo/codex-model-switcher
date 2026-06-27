@@ -1,0 +1,16 @@
+{
+  "name": "codex-model-switcher",
+  "version": "1.0.0",
+  "description": "One-click switcher for Codex between Official GPT models and DeepSeek models.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "private": true,
+  "devDependencies": {
+    "electron": "^42.5.0"
+  }
+}

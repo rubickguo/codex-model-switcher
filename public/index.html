@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Codex Model Switcher - 官方 & DeepSeek 一键切换</title>
+  <meta name="description" content="A premium utility dashboard to switch Codex model configurations between OpenAI Official and DeepSeek endpoints.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="glow-bg"></div>
+  
+  <div class="container">
+    <!-- Header -->
+    <header class="main-header">
+      <div class="brand">
+        <div class="logo-glow"></div>
+        <h1>Codex Model Switcher</h1>
+        <span class="version-tag">v1.0.0</span>
+      </div>
+      <p class="subtitle">零配置冲突，不影响历史会话，一键无损切换 AI 后端</p>
+    </header>
+
+    <!-- Top Grid: Status & Toggle -->
+    <div class="dashboard-grid">
+      <!-- Status Card -->
+      <section class="card status-card" aria-labelledby="status-title">
+        <h2 id="status-title" class="section-title">系统状态</h2>
+        <div class="status-list">
+          <div class="status-item">
+            <span class="status-label">Codex 客户端</span>
+            <span id="codex-status" class="status-badge badge-off">检测中...</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">DeepSeek 桥接服务</span>
+            <span id="bridge-status" class="status-badge badge-off">检测中...</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">当前生效模型</span>
+            <span id="active-model" class="status-value">检测中...</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">历史会话数据</span>
+            <span id="sessions-status" class="status-value safe-status">0 聊天 (100% 安全)</span>
+          </div>
+        </div>
+        <div class="status-actions">
+          <button id="btn-restart-codex" class="btn btn-secondary">重启 Codex 客户端</button>
+        </div>
+      </section>
+
+      <!-- Mode Selector Card -->
+      <section class="card toggle-card" aria-labelledby="mode-title">
+        <h2 id="mode-title" class="section-title">选择运行模式</h2>
+        <p class="description">一键在官方 GPT 引擎与 DeepSeek 引擎之间切换。</p>
+        <div class="mode-toggle-group">
+          <button id="toggle-gpt" class="mode-btn active" data-mode="gpt">
+            <span class="icon">✨</span>
+            <span class="mode-name">Codex 官方 (GPT)</span>
+          </button>
+          <button id="toggle-deepseek" class="mode-btn" data-mode="deepseek">
+            <span class="icon">🚀</span>
+            <span class="mode-name">DeepSeek 模式</span>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Main Config Panels -->
+    <main class="config-container">
+      <!-- GPT Config Panel -->
+      <section id="panel-gpt" class="card config-panel active" aria-labelledby="gpt-title">
+        <div class="panel-header">
+          <div class="panel-icon gpt-icon">✨</div>
+          <div>
+            <h2 id="gpt-title">Codex 官方 OpenAI 模式</h2>
+            <p>使用 OpenAI 官方通道（支持 GPT-4o, GPT-5.5），不修改任何 ASAR 或运行文件，原生会话体验。</p>
+          </div>
+        </div>
+        <div class="info-alert">
+          <p><strong>安全说明:</strong> 切换到官方模式会清除对 <code>config.toml</code> 的所有代理劫持，直接连接官方服务端。您的历史 ChatGPT 登录状态将立即生效，且聊天记录完全保留。</p>
+        </div>
+        <div class="panel-actions">
+          <button id="btn-apply-gpt" class="btn btn-primary btn-gpt-apply">启用官方模式</button>
+        </div>
+      </section>
+
+      <!-- DeepSeek Config Panel -->
+      <section id="panel-deepseek" class="card config-panel" aria-labelledby="deepseek-title">
+        <div class="panel-header">
+          <div class="panel-icon deepseek-icon">🚀</div>
+          <div>
+            <h2 id="deepseek-title">DeepSeek 桥接配置</h2>
+            <p>基于本地兼容性网桥代理，允许使用第三方服务商或官方 DeepSeek API。</p>
+          </div>
+        </div>
+        
+        <form id="deepseek-form" class="config-form" onsubmit="return false;">
+          <!-- Preset Providers -->
+          <div class="form-group">
+            <label for="provider-select">API 服务商预设</label>
+            <select id="provider-select" class="form-control">
+              <option value="official">DeepSeek 官方 API (api.deepseek.com)</option>
+              <option value="siliconflow">硅基流动 SiliconFlow (性价比高，免翻墙)</option>
+              <option value="custom">自定义 OpenAI 兼容端 (第三方中转/自建)</option>
+            </select>
+          </div>
+
+          <!-- Base URL (conditional) -->
+          <div id="url-group" class="form-group hidden">
+            <label for="base-url-input">API Base URL</label>
+            <input type="url" id="base-url-input" class="form-control" placeholder="https://api.example.com/v1" />
+          </div>
+
+          <!-- API Key -->
+          <div class="form-group">
+            <label for="api-key-input">API Key</label>
+            <div class="input-with-toggle">
+              <input type="password" id="api-key-input" class="form-control" placeholder="输入您的 API 密钥 (保存后会以掩码形式展示)" required />
+              <button type="button" id="btn-toggle-key" class="btn-toggle" aria-label="切换密码显示">👁️</button>
+            </div>
+          </div>
+
+          <!-- Model Mappings -->
+          <div class="form-row">
+            <!-- Pro Model -->
+            <div class="form-group">
+              <label for="model-pro-select">主力编码模型 (deepseek-pro 映射)</label>
+              <div class="select-or-input">
+                <select id="model-pro-select" class="form-control">
+                  <option value="deepseek-reasoner">deepseek-reasoner (深度思考/R1 官方)</option>
+                  <option value="deepseek-chat">deepseek-chat (通用对话/V3 官方)</option>
+                  <option value="deepseek-ai/DeepSeek-R1" selected>deepseek-ai/DeepSeek-R1 (SiliconFlow 推荐)</option>
+                  <option value="deepseek-ai/DeepSeek-V3">deepseek-ai/DeepSeek-V3 (SiliconFlow)</option>
+                  <option value="custom_pro">-- 自定义模型名称 --</option>
+                </select>
+                <input type="text" id="model-pro-custom" class="form-control hidden" placeholder="例如: deepseek-r1" />
+              </div>
+              <span class="field-desc">此模型将被映射到 Codex 中的 Pro 模型节点</span>
+            </div>
+
+            <!-- Flash Model -->
+            <div class="form-group">
+              <label for="model-flash-select">快速诊断模型 (deepseek-flash 映射)</label>
+              <div class="select-or-input">
+                <select id="model-flash-select" class="form-control">
+                  <option value="deepseek-chat" selected>deepseek-chat (通用对话/V3 官方)</option>
+                  <option value="deepseek-reasoner">deepseek-reasoner (深度思考/R1 官方)</option>
+                  <option value="deepseek-ai/DeepSeek-V3">deepseek-ai/DeepSeek-V3 (SiliconFlow 推荐)</option>
+                  <option value="deepseek-ai/DeepSeek-R1">deepseek-ai/DeepSeek-R1 (SiliconFlow)</option>
+                  <option value="custom_flash">-- 自定义模型名称 --</option>
+                </select>
+                <input type="text" id="model-flash-custom" class="form-control hidden" placeholder="例如: deepseek-v3" />
+              </div>
+              <span class="field-desc">此模型将被映射到 Codex 中的 Flash 闪存模型节点</span>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" id="btn-apply-deepseek" class="btn btn-primary btn-deepseek-apply">保存配置并应用</button>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <!-- Bottom Panels: Backups & Logs -->
+    <div class="bottom-grid">
+      <!-- Backups Section -->
+      <section class="card backups-card" aria-labelledby="backups-title">
+        <h2 id="backups-title" class="section-title">备份历史 (可随时恢复初始状态)</h2>
+        <p class="description">我们在每次切换修改前都会保存原有的配置文件，点击还原即可完全退回。</p>
+        <div class="table-container">
+          <table class="backups-table">
+            <thead>
+              <tr>
+                <th>备份名称</th>
+                <th>修改日期</th>
+                <th>大小</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="backups-list">
+              <tr>
+                <td colspan="4" class="empty-state">正在获取备份列表...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Logs Section -->
+      <section class="card logs-card" aria-labelledby="logs-title">
+        <div class="logs-header">
+          <h2 id="logs-title" class="section-title">控制台日志</h2>
+          <div class="logs-actions">
+            <button id="btn-clear-logs" class="btn-icon" title="清空日志">🧹</button>
+            <button id="btn-refresh-logs" class="btn-icon" title="手动刷新">🔄</button>
+          </div>
+        </div>
+        <div class="console-box">
+          <pre id="console-output">正在获取系统及网桥日志...</pre>
+        </div>
+      </section>
+    </div>
+
+    <!-- Safety Banner -->
+    <footer class="safety-banner">
+      <div class="safety-content">
+        <span class="shield-icon">🛡️</span>
+        <p><strong>会话无损保障：</strong>本程序仅更改 <code>~/.codex/config.toml</code> 中的模型配置与本地网关路由，完全避开了 Codex 的 SQLite 数据库与缓存机制，保证本地历史聊天的安全性。</p>
+      </div>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
