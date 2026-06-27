@@ -80,8 +80,14 @@ final class SwitcherModel: ObservableObject {
     @Published var keyEditorSwitchesAfterSave = false
 
     private let home = ProcessInfo.processInfo.environment["MOCK_HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
+    private let explicitCodexHome = ProcessInfo.processInfo.environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines)
 
-    private var codexHome: String { "\(home)/.codex" }
+    private var codexHome: String {
+        if let explicitCodexHome, !explicitCodexHome.isEmpty {
+            return (explicitCodexHome as NSString).expandingTildeInPath
+        }
+        return "\(home)/.codex"
+    }
     private var bridgeHome: String { "\(codexHome)/codex-deepseek-bridge" }
     private var appStateHome: String { "\(codexHome)/codex-model-switcher" }
     private var binDir: String { "\(bridgeHome)/bin" }
@@ -94,6 +100,9 @@ final class SwitcherModel: ObservableObject {
     private var initialConfigBackupPath: String { "\(initialBackupDir)/config.toml" }
     private var initialSessionMetaBackupPath: String { "\(initialBackupDir)/session-meta.json" }
     private var switchLogPath: String { "\(appStateHome)/switcher.log" }
+    private var codexAppPath: String? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex")?.path
+    }
     private var helperPath: String {
         let arch = shellOutput("/usr/bin/uname", ["-m"]).trimmingCharacters(in: .whitespacesAndNewlines)
         return "\(binDir)/\(arch == "x86_64" ? "codex-deepseek-bridge-macos-x64" : "codex-deepseek-bridge-macos")"
@@ -189,7 +198,7 @@ final class SwitcherModel: ObservableObject {
             try self.applyDeepSeekProvider()
             let threadSummary = try self.syncThreadInventoryForMode(.deepseek)
             let sessionSummary = try self.syncSessionMetaForMode(.deepseek)
-            self.appendSwitchLog("switch=deepseek sqlite_scanned=\(threadSummary.scanned) sqlite_changed=\(threadSummary.changed) session_scanned=\(sessionSummary.scanned) session_changed=\(sessionSummary.changed)")
+            self.appendSwitchLog("switch=deepseek codex_home=\(self.codexHome) codex_app=\(self.codexAppPath ?? "<not-found>") sqlite_scanned=\(threadSummary.scanned) sqlite_changed=\(threadSummary.changed) session_scanned=\(sessionSummary.scanned) session_changed=\(sessionSummary.changed)")
             try self.ensureBridgeRunningOnDefaultPort()
             self.restartCodex()
         }
@@ -211,7 +220,7 @@ final class SwitcherModel: ObservableObject {
             try self.applyUnifiedOfficialProvider()
             let threadSummary = try self.syncThreadInventoryForMode(.gpt)
             let sessionSummary = try self.syncSessionMetaForMode(.gpt)
-            self.appendSwitchLog("switch=gpt sqlite_scanned=\(threadSummary.scanned) sqlite_changed=\(threadSummary.changed) session_scanned=\(sessionSummary.scanned) session_changed=\(sessionSummary.changed)")
+            self.appendSwitchLog("switch=gpt codex_home=\(self.codexHome) codex_app=\(self.codexAppPath ?? "<not-found>") sqlite_scanned=\(threadSummary.scanned) sqlite_changed=\(threadSummary.changed) session_scanned=\(sessionSummary.scanned) session_changed=\(sessionSummary.changed)")
             self.restartCodex()
         }
     }
@@ -269,7 +278,7 @@ final class SwitcherModel: ObservableObject {
             }
             let threadSummary = try self.syncThreadInventoryForMode(.gpt)
             let sessionSummary = try self.syncSessionMetaForMode(.gpt)
-            self.appendSwitchLog("reset-prep sqlite_scanned=\(threadSummary.scanned) sqlite_changed=\(threadSummary.changed) session_scanned=\(sessionSummary.scanned) session_changed=\(sessionSummary.changed)")
+            self.appendSwitchLog("reset-prep codex_home=\(self.codexHome) codex_app=\(self.codexAppPath ?? "<not-found>") sqlite_scanned=\(threadSummary.scanned) sqlite_changed=\(threadSummary.changed) session_scanned=\(sessionSummary.scanned) session_changed=\(sessionSummary.changed)")
             try self.restoreInitialConfig()
             try self.restoreInitialThreadInventory()
             try self.restoreInitialSessionMetaInventory()
@@ -1271,11 +1280,15 @@ final class SwitcherModel: ObservableObject {
     }
 
     private func restartCodex() {
-        _ = runQuiet("/usr/bin/open", ["-a", "Codex"])
+        if let codexAppPath {
+            _ = runQuiet("/usr/bin/open", [codexAppPath])
+        } else {
+            _ = runQuiet("/usr/bin/open", ["-b", "com.openai.codex"])
+        }
     }
 
     private func stopCodex() {
-        _ = runQuiet("/usr/bin/osascript", ["-e", "tell application \"Codex\" to quit"])
+        _ = runQuiet("/usr/bin/osascript", ["-e", "tell application id \"com.openai.codex\" to quit"])
         Thread.sleep(forTimeInterval: 2.0)
     }
 

@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CODEX_APP="${CODEX_APP:-/Applications/Codex.app}"
+if [[ -z "${CODEX_APP:-}" ]]; then
+  CODEX_APP="$(/usr/bin/mdfind 'kMDItemCFBundleIdentifier == "com.openai.codex"' | /usr/bin/head -1 || true)"
+  CODEX_APP="${CODEX_APP:-/Applications/Codex.app}"
+fi
 SWITCHER_APP="${SWITCHER_APP:-$HOME/Applications/Codex 模型切换器.app}"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 SWITCHER_SCRIPT="$SWITCHER_APP/Contents/Resources/provider-safe-guard.mjs"
 
-state_dbs=(
-  "$CODEX_HOME/state_5.sqlite"
-  "$CODEX_HOME/sqlite/state_5.sqlite"
-  "$CODEX_HOME/state/state_5.sqlite"
-)
+state_dbs=()
+for dir in "$CODEX_HOME" "$CODEX_HOME/sqlite" "$CODEX_HOME/state"; do
+  [[ -d "$dir" ]] || continue
+  while IFS= read -r db; do
+    state_dbs+=("$db")
+  done < <(/usr/bin/find "$dir" -maxdepth 1 -type f -name 'state_*.sqlite' 2>/dev/null | /usr/bin/sort)
+done
 
 print_section() {
   printf '\n== %s ==\n' "$1"
@@ -115,9 +120,9 @@ if [[ "${1:-}" == "--roundtrip-index" ]]; then
     exit 1
   fi
 
-  primary_db="$CODEX_HOME/state_5.sqlite"
+  primary_db="${state_dbs[0]:-}"
   if [[ ! -f "$primary_db" ]]; then
-    printf 'Missing primary Codex state database: %s\n' "$primary_db" >&2
+    printf 'Missing primary Codex state database under: %s\n' "$CODEX_HOME" >&2
     exit 1
   fi
 

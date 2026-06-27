@@ -5,6 +5,7 @@ Bug 修复版本。
 - 修复 DeepSeek 模式仍看不到全部会话的问题：切换时现在同时同步 SQLite 线程索引和 JSONL `session_meta.model_provider`，不再只改 `threads` 表。
 - 新增切换日志：`~/.codex/codex-model-switcher/switcher.log`，记录每次切换扫描和更新了多少 SQLite / JSONL 项。
 - 重置个人配置时会恢复首次备份的 JSONL `session_meta.model_provider`。
+- 自动识别 Codex.app 的实际安装位置，并支持 `CODEX_HOME` 环境变量。
 
 # v0.2.2
 

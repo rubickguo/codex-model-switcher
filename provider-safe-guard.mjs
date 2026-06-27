@@ -6,7 +6,9 @@ import { execFileSync } from "node:child_process";
 
 const mode = process.argv[2] || "";
 const home = os.homedir();
-const codexHome = path.join(home, ".codex");
+const codexHome = process.env.CODEX_HOME && process.env.CODEX_HOME.trim().length > 0
+  ? process.env.CODEX_HOME.replace(/^~(?=$|\/)/, home)
+  : path.join(home, ".codex");
 
 function stateDbCandidates() {
   const candidates = [
