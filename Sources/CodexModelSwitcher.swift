@@ -88,9 +88,9 @@ final class SwitcherModel: ObservableObject {
     func refresh() {
         try? ensureInitialBackup()
         helperInstalled = FileManager.default.isExecutableFile(atPath: helperPath)
-        keyConfigured = (try? String(contentsOfFile: keyPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ?? false
-
-        let config = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
+        keyConfigured = !readFileNormalized(atPath: keyPath).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        
+        let config = readConfig()
         if config.contains("model_provider = \"deepseek_bridge\"") || config.contains("# >>> codex-deepseek-bridge") {
             mode = .deepseek
         } else if config.contains("model =") {
@@ -215,9 +215,19 @@ final class SwitcherModel: ObservableObject {
             return
         }
         
-        let bundledNode = "/Applications/Codex.app/Contents/Resources/cua_node/bin/node"
-        if fm.isExecutableFile(atPath: bundledNode) {
-            _ = runQuiet(bundledNode, [scriptPath, mode])
+        let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
+        let nodeCandidates = [
+            "/Applications/Codex.app/Contents/Resources/cua_node/bin/node",
+            "\(homeDir)/Applications/Codex.app/Contents/Resources/cua_node/bin/node",
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+            "/usr/bin/node"
+        ]
+        
+        let nodePath = nodeCandidates.first(where: { fm.isExecutableFile(atPath: $0) }) ?? "node"
+        
+        if nodePath != "node" {
+            _ = runQuiet(nodePath, [scriptPath, mode])
         } else {
             _ = runQuiet("/usr/bin/env", ["node", scriptPath, mode])
         }
@@ -289,7 +299,7 @@ final class SwitcherModel: ObservableObject {
         let configExisted = fm.fileExists(atPath: configPath)
         var configBackupPath: String? = nil
         if configExisted {
-            var config = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
+            var config = readConfig()
             if config.contains("# >>> codex-deepseek-bridge") || config.contains("# >>> codex-deepseek-bridge-dummy") {
                 config = removingManagedConfigBlock(from: config)
             }
@@ -485,7 +495,7 @@ final class SwitcherModel: ObservableObject {
     }
 
     private func applyDeepSeekProvider() throws {
-        let existing = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
+        let existing = readConfig()
         let cleaned = cleanedConfigForManagedProvider(existing)
         let block = [
             "# >>> codex-deepseek-bridge",
@@ -509,7 +519,7 @@ final class SwitcherModel: ObservableObject {
     }
 
     private func applyUnifiedOfficialProvider() throws {
-        let existing = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
+        let existing = readConfig()
         let cleaned = cleanedConfigForOpenAIProvider(existing)
         let block = [
             "# >>> codex-deepseek-bridge-dummy",
@@ -618,6 +628,15 @@ final class SwitcherModel: ObservableObject {
         return output.joined(separator: "\n")
     }
 
+    private func readConfig() -> String {
+        readFileNormalized(atPath: configPath)
+    }
+
+    private func readFileNormalized(atPath path: String) -> String {
+        ((try? String(contentsOfFile: path, encoding: .utf8)) ?? "")
+            .replacingOccurrences(of: "\r\n", with: "\n")
+    }
+
     private func removingManagedConfigBlock(from text: String) -> String {
         var updated = text
         if let start = updated.range(of: "# >>> codex-deepseek-bridge"),
@@ -647,7 +666,7 @@ final class SwitcherModel: ObservableObject {
     }
 
     private func stripUnifiedOfficialProvider() throws {
-        let lines = ((try? String(contentsOfFile: configPath, encoding: .utf8)) ?? "")
+        let lines = readConfig()
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map(String.init)
 
@@ -714,7 +733,7 @@ final class SwitcherModel: ObservableObject {
                     continue
                 }
                 let path = "\(dir)/\(relativePath)"
-                let original = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+                let original = readFileNormalized(atPath: path)
                 let (updated, changed, sessionProviders) = rewriteSessionMetaProviders(
                     in: original,
                     sourceProviders: sourceProviders,
@@ -782,7 +801,7 @@ final class SwitcherModel: ObservableObject {
                     continue
                 }
                 let path = "\(dir)/\(relativePath)"
-                let original = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+                let original = readFileNormalized(atPath: path)
                 let (updated, changed) = restoreSessionMetaProviders(in: original, providersBySessionId: state.sessionProviders)
                 guard changed else {
                     continue
@@ -1029,6 +1048,18 @@ final class SwitcherModel: ObservableObject {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
+
+        var currentEnv = ProcessInfo.processInfo.environment
+        let additionalPaths = ["/opt/homebrew/bin", "/usr/local/bin"]
+        let existingPath = currentEnv["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        var pathComponents = existingPath.split(separator: ":").map(String.init)
+        for addPath in additionalPaths {
+            if !pathComponents.contains(addPath) {
+                pathComponents.append(addPath)
+            }
+        }
+        currentEnv["PATH"] = pathComponents.joined(separator: ":")
+        process.environment = currentEnv
 
         let out = Pipe()
         let err = Pipe()
