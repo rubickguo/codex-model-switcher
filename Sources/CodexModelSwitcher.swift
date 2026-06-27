@@ -67,7 +67,7 @@ final class SwitcherModel: ObservableObject {
     @Published var showDeepSeekSettings = false
     @Published var keyEditorSwitchesAfterSave = false
 
-    private let home = FileManager.default.homeDirectoryForCurrentUser.path
+    private let home = ProcessInfo.processInfo.environment["MOCK_HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
 
     private var codexHome: String { "\(home)/.codex" }
     private var bridgeHome: String { "\(codexHome)/codex-deepseek-bridge" }
@@ -522,7 +522,7 @@ final class SwitcherModel: ObservableObject {
         let existing = readConfig()
         let cleaned = cleanedConfigForOpenAIProvider(existing)
         let block = [
-            "# >>> codex-deepseek-bridge-dummy",
+            "# >>> codex-deepseek-dummy",
             "model = \"gpt-5.5\"",
             "model_reasoning_effort = \"xhigh\"",
             "",
@@ -532,7 +532,7 @@ final class SwitcherModel: ObservableObject {
             "wire_api = \"responses\"",
             "supports_websockets = false",
             "requires_openai_auth = false",
-            "# <<< codex-deepseek-bridge-dummy",
+            "# <<< codex-deepseek-dummy",
             ""
         ].joined(separator: "\n")
 
@@ -646,6 +646,11 @@ final class SwitcherModel: ObservableObject {
         }
         if let start = updated.range(of: "# >>> codex-deepseek-bridge-dummy"),
            let end = updated.range(of: "# <<< codex-deepseek-bridge-dummy"),
+           end.lowerBound > start.lowerBound {
+            updated.removeSubrange(start.lowerBound..<end.upperBound)
+        }
+        if let start = updated.range(of: "# >>> codex-deepseek-dummy"),
+           let end = updated.range(of: "# <<< codex-deepseek-dummy"),
            end.lowerBound > start.lowerBound {
             updated.removeSubrange(start.lowerBound..<end.upperBound)
         }
