@@ -91,13 +91,7 @@ final class SwitcherModel: ObservableObject {
         keyConfigured = !readFileNormalized(atPath: keyPath).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         
         let config = readConfig()
-        if config.contains("model_provider = \"deepseek_bridge\"") || config.contains("# >>> codex-deepseek-bridge") {
-            mode = .deepseek
-        } else if config.contains("model =") {
-            mode = .gpt
-        } else {
-            mode = .unknown
-        }
+        mode = detectedMode(from: config)
 
         bridgeRunning = false
         if helperInstalled {
@@ -179,7 +173,7 @@ final class SwitcherModel: ObservableObject {
 
             try self.writeDeepSeekModelCatalog()
             try self.applyDeepSeekProvider()
-            self.runProviderGuard(mode: "deepseek")
+            try self.syncThreadInventoryForMode(.deepseek)
             try self.ensureBridgeRunningOnDefaultPort()
             self.restartCodex()
         }
@@ -199,7 +193,7 @@ final class SwitcherModel: ObservableObject {
                 try? FileManager.default.removeItem(atPath: "\(p)-shm")
             }
             try self.applyUnifiedOfficialProvider()
-            self.runProviderGuard(mode: "gpt")
+            try self.syncThreadInventoryForMode(.gpt)
             self.restartCodex()
         }
     }
@@ -233,6 +227,21 @@ final class SwitcherModel: ObservableObject {
         }
     }
 
+    private func detectedMode(from config: String) -> CodexMode {
+        if config.contains("# >>> codex-deepseek-bridge-dummy") {
+            return .gpt
+        }
+        if config.contains("# >>> codex-deepseek-bridge") ||
+            config.contains("model_provider = \"deepseek_bridge\"") ||
+            (config.contains("model_provider = \"custom\"") && config.contains("127.0.0.1:8787")) {
+            return .deepseek
+        }
+        if config.contains("model =") {
+            return .gpt
+        }
+        return .unknown
+    }
+
     func resetAll() {
         runTask("正在重置个人配置") {
             try self.ensureInitialBackup()
@@ -240,7 +249,7 @@ final class SwitcherModel: ObservableObject {
             if FileManager.default.isExecutableFile(atPath: self.helperPath) {
                 _ = self.runQuiet(self.helperPath, ["stop"])
             }
-            self.runProviderGuard(mode: "gpt")
+            try self.syncThreadInventoryForMode(.gpt)
             try self.restoreInitialConfig()
             try self.restoreInitialThreadInventory()
             self.restartCodex()
@@ -389,19 +398,57 @@ final class SwitcherModel: ObservableObject {
         }
     }
 
+    private func syncThreadInventoryForMode(_ targetMode: CodexMode) throws {
+        let provider: String
+        let model: String
+        switch targetMode {
+        case .deepseek:
+            provider = "custom"
+            model = "deepseek-pro"
+        case .gpt:
+            provider = "openai"
+            model = "gpt-5.5"
+        case .unknown:
+            return
+        }
+
+        for dbPath in stateDbPaths() where try hasThreadInventorySchema(dbPath) {
+            let sql = [
+                "PRAGMA wal_checkpoint(TRUNCATE);",
+                "BEGIN IMMEDIATE;",
+                "UPDATE threads SET model_provider = \(sqlQuote(provider)), model = \(sqlQuote(model));",
+                "COMMIT;",
+                "PRAGMA wal_checkpoint(TRUNCATE);"
+            ].joined(separator: "\n")
+            _ = try run("/usr/bin/sqlite3", [dbPath, sql])
+        }
+    }
+
     private func stateDbPaths() -> [String] {
-        let candidates = [
+        let fm = FileManager.default
+        var candidates = [
             "\(codexHome)/state_5.sqlite",
             "\(codexHome)/sqlite/state_5.sqlite",
             "\(codexHome)/state/state_5.sqlite"
         ]
-        var seen: Set<String> = []
-        return candidates.filter { path in
-            guard FileManager.default.fileExists(atPath: path), !seen.contains(path) else {
-                return false
+
+        for dir in [codexHome, "\(codexHome)/sqlite", "\(codexHome)/state"] {
+            guard let names = try? fm.contentsOfDirectory(atPath: dir) else {
+                continue
             }
-            seen.insert(path)
-            return true
+            for name in names where name.hasPrefix("state_") && name.hasSuffix(".sqlite") {
+                candidates.append((dir as NSString).appendingPathComponent(name))
+            }
+        }
+
+        var seen: Set<String> = []
+        return candidates.compactMap { path in
+            let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+            guard fm.fileExists(atPath: normalized), !seen.contains(normalized) else {
+                return nil
+            }
+            seen.insert(normalized)
+            return normalized
         }
     }
 
@@ -522,17 +569,11 @@ final class SwitcherModel: ObservableObject {
         let existing = readConfig()
         let cleaned = cleanedConfigForOpenAIProvider(existing)
         let block = [
-            "# >>> codex-deepseek-dummy",
+            "# >>> codex-deepseek-bridge-dummy",
+            "# Managed by Codex 模型切换器.",
             "model = \"gpt-5.5\"",
             "model_reasoning_effort = \"xhigh\"",
-            "",
-            "[model_providers.custom]",
-            "name = \"DeepSeek (Bridge Inactive)\"",
-            "base_url = \"http://127.0.0.1:8787/v1\"",
-            "wire_api = \"responses\"",
-            "supports_websockets = false",
-            "requires_openai_auth = false",
-            "# <<< codex-deepseek-dummy",
+            "# <<< codex-deepseek-bridge-dummy",
             ""
         ].joined(separator: "\n")
 

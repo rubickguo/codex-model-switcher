@@ -1,3 +1,11 @@
+# v0.2.2
+
+Bug 修复版本。
+
+- 修复切换到 DeepSeek 后，在部分新机器上看不到历史会话的问题：会话索引同步现在由 App 本体执行，并动态识别 `~/.codex` 下的 `state_*.sqlite`，不再依赖 Node 脚本或固定 `state_5.sqlite` 路径。
+- 修复切回 GPT 后 App UI 仍显示 DeepSeek 的问题：GPT 配置块不再被误判为 DeepSeek。
+- GPT 模式不再写入 inactive 的 custom provider，避免 Codex 模型选择器继续显示“自定义”。
+
 # v0.2.1
 
 - 修复切换回 GPT 时，注释标志子串匹配冲突导致的 UI 状态未及时切回的问题。

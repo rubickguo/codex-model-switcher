@@ -8,11 +8,29 @@ const mode = process.argv[2] || "";
 const home = os.homedir();
 const codexHome = path.join(home, ".codex");
 
-const stateDbCandidates = [
-  path.join(codexHome, "state_5.sqlite"),
-  path.join(codexHome, "sqlite", "state_5.sqlite"),
-  path.join(codexHome, "state", "state_5.sqlite"),
-];
+function stateDbCandidates() {
+  const candidates = [
+    path.join(codexHome, "state_5.sqlite"),
+    path.join(codexHome, "sqlite", "state_5.sqlite"),
+    path.join(codexHome, "state", "state_5.sqlite"),
+  ];
+
+  for (const dir of [codexHome, path.join(codexHome, "sqlite"), path.join(codexHome, "state")]) {
+    let names = [];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (name.startsWith("state_") && name.endsWith(".sqlite")) {
+        candidates.push(path.join(dir, name));
+      }
+    }
+  }
+
+  return candidates;
+}
 
 function sqlValue(value) {
   if (value === null || value === undefined) return "NULL";
@@ -35,9 +53,13 @@ function sqliteJson(db, sql) {
 }
 
 function existingStateDbs() {
-  return stateDbCandidates.filter((candidate, index, all) => (
-    fs.existsSync(candidate) && all.indexOf(candidate) === index
-  ));
+  const seen = new Set();
+  return stateDbCandidates().filter((candidate) => {
+    const normalized = path.resolve(candidate);
+    if (!fs.existsSync(normalized) || seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  });
 }
 
 function dbHasThreadInventorySchema(db) {
@@ -68,10 +90,11 @@ function syncThreadInventoryForMode(targetMode) {
     }
     const changed = sqliteScalar(
       db,
-      `UPDATE threads SET model_provider = ${sqlValue(provider)}, model = ${sqlValue(model)}; SELECT changes(); PRAGMA wal_checkpoint(TRUNCATE);`,
+      `PRAGMA wal_checkpoint(TRUNCATE); BEGIN IMMEDIATE; UPDATE threads SET model_provider = ${sqlValue(provider)}, model = ${sqlValue(model)}; SELECT changes(); COMMIT; PRAGMA wal_checkpoint(TRUNCATE);`,
     );
     dbs += 1;
-    rows += Number(changed.split(/\r?\n/)[0] || 0);
+    const numericLine = changed.split(/\r?\n/).find((line) => /^\d+$/.test(line.trim()));
+    rows += Number(numericLine || 0);
   }
 
   return { provider, model, dbs, rows, skipped };

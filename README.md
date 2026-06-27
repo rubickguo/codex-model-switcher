@@ -14,9 +14,9 @@
 
 ## 会话保留机制
 
-Codex 的会话正文在 `~/.codex/sessions`，侧边栏索引在 `~/.codex/state_5.sqlite` 等本地状态库里。
+Codex 的会话正文在 `~/.codex/sessions`，侧边栏索引在 `~/.codex/state_*.sqlite` 等本地状态库里。
 
-本工具不会复制、扫描或删除会话正文。切换模型时只同步已有 `threads` 表里的 `model_provider` 和 `model` 两个索引字段，让同一批会话在 GPT 和 DeepSeek 模式下都可见。
+本工具不会复制、扫描或删除会话正文。切换模型时会查找已有 Codex 状态库，并只同步 `threads` 表里的 `model_provider` 和 `model` 两个索引字段，让同一批会话在 GPT 和 DeepSeek 模式下都可见。
 
 如果用户机器上没有兼容的 Codex 会话库，本工具不会创建数据库，也不会伪造会话表。需要先打开 Codex 创建会话，或者等待本工具适配新版 Codex 会话库结构。
 
