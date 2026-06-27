@@ -63,10 +63,25 @@ Codex 的会话正文在 `~/.codex/sessions`，侧边栏索引在 `~/.codex/stat
 ~/Applications/Codex 模型切换器.app
 ```
 
+## 测试
+
+发布前测试清单见 [QA.md](QA.md)。
+
+快速检查当前机器状态：
+
+```bash
+./scripts/qa_check.sh
+```
+
+测试会话索引在 GPT / DeepSeek 之间往返是否保留：
+
+```bash
+./scripts/qa_check.sh --roundtrip-index
+```
+
 ## 限制
 
 - 第一版只支持 DeepSeek。
 - release 构建面向 Apple Silicon Mac。
 - 会话列表可以在 GPT 和 DeepSeek 模式间共享，但不承诺同一条线程在两个 provider 间无缝续写。隐藏加密推理块可能不兼容。
 - Codex 的本地会话库不是公开稳定 API。如果未来 Codex 修改 schema，需要适配本工具。
-
