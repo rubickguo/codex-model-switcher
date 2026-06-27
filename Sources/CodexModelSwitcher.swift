@@ -33,6 +33,18 @@ struct ThreadInventoryBackup: Codable {
     var model: String?
 }
 
+struct SessionMetaInventoryBackup: Codable {
+    var filePath: String
+    var sessionId: String
+    var modelProvider: String
+}
+
+struct SyncSummary {
+    var scanned: Int = 0
+    var changed: Int = 0
+    var targets: Int = 0
+}
+
 enum AppError: LocalizedError {
     case message(String)
 
@@ -80,6 +92,8 @@ final class SwitcherModel: ObservableObject {
     private var initialBackupDir: String { "\(appStateHome)/initial-backup" }
     private var initialBackupManifestPath: String { "\(initialBackupDir)/manifest.json" }
     private var initialConfigBackupPath: String { "\(initialBackupDir)/config.toml" }
+    private var initialSessionMetaBackupPath: String { "\(initialBackupDir)/session-meta.json" }
+    private var switchLogPath: String { "\(appStateHome)/switcher.log" }
     private var helperPath: String {
         let arch = shellOutput("/usr/bin/uname", ["-m"]).trimmingCharacters(in: .whitespacesAndNewlines)
         return "\(binDir)/\(arch == "x86_64" ? "codex-deepseek-bridge-macos-x64" : "codex-deepseek-bridge-macos")"
@@ -173,7 +187,9 @@ final class SwitcherModel: ObservableObject {
 
             try self.writeDeepSeekModelCatalog()
             try self.applyDeepSeekProvider()
-            try self.syncThreadInventoryForMode(.deepseek)
+            let threadSummary = try self.syncThreadInventoryForMode(.deepseek)
+            let sessionSummary = try self.syncSessionMetaForMode(.deepseek)
+            self.appendSwitchLog("switch=deepseek sqlite_scanned=\(threadSummary.scanned) sqlite_changed=\(threadSummary.changed) session_scanned=\(sessionSummary.scanned) session_changed=\(sessionSummary.changed)")
             try self.ensureBridgeRunningOnDefaultPort()
             self.restartCodex()
         }
@@ -193,7 +209,9 @@ final class SwitcherModel: ObservableObject {
                 try? FileManager.default.removeItem(atPath: "\(p)-shm")
             }
             try self.applyUnifiedOfficialProvider()
-            try self.syncThreadInventoryForMode(.gpt)
+            let threadSummary = try self.syncThreadInventoryForMode(.gpt)
+            let sessionSummary = try self.syncSessionMetaForMode(.gpt)
+            self.appendSwitchLog("switch=gpt sqlite_scanned=\(threadSummary.scanned) sqlite_changed=\(threadSummary.changed) session_scanned=\(sessionSummary.scanned) session_changed=\(sessionSummary.changed)")
             self.restartCodex()
         }
     }
@@ -249,9 +267,12 @@ final class SwitcherModel: ObservableObject {
             if FileManager.default.isExecutableFile(atPath: self.helperPath) {
                 _ = self.runQuiet(self.helperPath, ["stop"])
             }
-            try self.syncThreadInventoryForMode(.gpt)
+            let threadSummary = try self.syncThreadInventoryForMode(.gpt)
+            let sessionSummary = try self.syncSessionMetaForMode(.gpt)
+            self.appendSwitchLog("reset-prep sqlite_scanned=\(threadSummary.scanned) sqlite_changed=\(threadSummary.changed) session_scanned=\(sessionSummary.scanned) session_changed=\(sessionSummary.changed)")
             try self.restoreInitialConfig()
             try self.restoreInitialThreadInventory()
+            try self.restoreInitialSessionMetaInventory()
             self.restartCodex()
         }
     }
@@ -398,7 +419,51 @@ final class SwitcherModel: ObservableObject {
         }
     }
 
-    private func syncThreadInventoryForMode(_ targetMode: CodexMode) throws {
+    private func ensureInitialSessionMetaBackup() throws {
+        guard !FileManager.default.fileExists(atPath: initialSessionMetaBackupPath) else {
+            return
+        }
+        try FileManager.default.createDirectory(atPath: initialBackupDir, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(captureSessionMetaInventory())
+        try data.write(to: URL(fileURLWithPath: initialSessionMetaBackupPath), options: .atomic)
+    }
+
+    private func captureSessionMetaInventory() -> [SessionMetaInventoryBackup] {
+        sessionJsonlPaths().compactMap { path in
+            guard let meta = readSessionMeta(from: path) else {
+                return nil
+            }
+            return SessionMetaInventoryBackup(
+                filePath: path,
+                sessionId: meta.sessionId,
+                modelProvider: meta.modelProvider
+            )
+        }
+    }
+
+    private func restoreInitialSessionMetaInventory() throws {
+        guard FileManager.default.fileExists(atPath: initialSessionMetaBackupPath) else {
+            return
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: initialSessionMetaBackupPath))
+        let rows = try JSONDecoder().decode([SessionMetaInventoryBackup].self, from: data)
+        var summary = SyncSummary()
+        for row in rows where FileManager.default.fileExists(atPath: row.filePath) {
+            summary.scanned += 1
+            let original = readFileNormalized(atPath: row.filePath)
+            let (updated, changed) = rewriteSessionMetaProvider(in: original, targetProvider: row.modelProvider)
+            guard changed else {
+                continue
+            }
+            try updated.write(toFile: row.filePath, atomically: true, encoding: .utf8)
+            summary.changed += 1
+        }
+        appendSwitchLog("restore-session-meta scanned=\(summary.scanned) changed=\(summary.changed)")
+    }
+
+    private func syncThreadInventoryForMode(_ targetMode: CodexMode) throws -> SyncSummary {
         let provider: String
         let model: String
         switch targetMode {
@@ -409,19 +474,145 @@ final class SwitcherModel: ObservableObject {
             provider = "openai"
             model = "gpt-5.5"
         case .unknown:
-            return
+            return SyncSummary()
         }
 
+        var summary = SyncSummary()
         for dbPath in stateDbPaths() where try hasThreadInventorySchema(dbPath) {
             let sql = [
                 "PRAGMA wal_checkpoint(TRUNCATE);",
                 "BEGIN IMMEDIATE;",
                 "UPDATE threads SET model_provider = \(sqlQuote(provider)), model = \(sqlQuote(model));",
+                "SELECT changes();",
                 "COMMIT;",
                 "PRAGMA wal_checkpoint(TRUNCATE);"
             ].joined(separator: "\n")
-            _ = try run("/usr/bin/sqlite3", [dbPath, sql])
+            let result = try run("/usr/bin/sqlite3", [dbPath, sql])
+            summary.scanned += 1
+            summary.changed += firstInteger(in: result.stdout) ?? 0
         }
+        return summary
+    }
+
+    private func sessionJsonlPaths() -> [String] {
+        var output: [String] = []
+        for root in ["\(codexHome)/sessions", "\(codexHome)/archived_sessions"] {
+            guard let enumerator = FileManager.default.enumerator(atPath: root) else {
+                continue
+            }
+            for case let relativePath as String in enumerator where relativePath.hasSuffix(".jsonl") {
+                output.append((root as NSString).appendingPathComponent(relativePath))
+            }
+        }
+        return output.sorted()
+    }
+
+    private func readSessionMeta(from path: String) -> (sessionId: String, modelProvider: String)? {
+        let text = readFileNormalized(atPath: path)
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+            guard line.contains("\"session_meta\""),
+                  line.contains("\"model_provider\""),
+                  let data = line.data(using: .utf8),
+                  let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  object["type"] as? String == "session_meta",
+                  let payload = object["payload"] as? [String: Any],
+                  let provider = payload["model_provider"] as? String,
+                  let sessionId = (payload["id"] as? String) ?? (payload["session_id"] as? String) else {
+                continue
+            }
+            return (sessionId, provider)
+        }
+        return nil
+    }
+
+    private func backupRelativePath(forSessionFile path: String) -> String {
+        for root in ["\(codexHome)/sessions", "\(codexHome)/archived_sessions"] {
+            let prefix = root + "/"
+            if path.hasPrefix(prefix) {
+                let rootName = (root as NSString).lastPathComponent
+                return "\(rootName)/\(String(path.dropFirst(prefix.count)))"
+            }
+        }
+        return (path as NSString).lastPathComponent
+    }
+
+    private func syncSessionMetaForMode(_ targetMode: CodexMode) throws -> SyncSummary {
+        let provider: String
+        switch targetMode {
+        case .deepseek:
+            provider = "custom"
+        case .gpt:
+            provider = "openai"
+        case .unknown:
+            return SyncSummary()
+        }
+
+        try ensureInitialSessionMetaBackup()
+
+        var summary = SyncSummary()
+        let backupRoot = "\(appStateHome)/backups/session-meta-\(targetMode.rawValue)-\(timestampForPath())"
+        var didCreateBackupRoot = false
+
+        for path in sessionJsonlPaths() {
+            summary.scanned += 1
+            let original = readFileNormalized(atPath: path)
+            let (updated, changed) = rewriteSessionMetaProvider(in: original, targetProvider: provider)
+            guard changed else {
+                continue
+            }
+            if !didCreateBackupRoot {
+                try FileManager.default.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
+                didCreateBackupRoot = true
+            }
+            let backupPath = "\(backupRoot)/\(backupRelativePath(forSessionFile: path))"
+            try copyFileCreatingParents(from: path, to: backupPath)
+            try updated.write(toFile: path, atomically: true, encoding: .utf8)
+            summary.changed += 1
+        }
+
+        return summary
+    }
+
+    private func rewriteSessionMetaProvider(in text: String, targetProvider: String) -> (String, Bool) {
+        var changed = false
+        let hadTrailingNewline = text.hasSuffix("\n")
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+        for index in lines.indices {
+            let line = lines[index]
+            guard line.contains("\"session_meta\""),
+                  line.contains("\"model_provider\""),
+                  let data = line.data(using: .utf8),
+                  var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  object["type"] as? String == "session_meta",
+                  var payload = object["payload"] as? [String: Any],
+                  let currentProvider = payload["model_provider"] as? String,
+                  currentProvider != targetProvider else {
+                continue
+            }
+
+            let compactOld = "\"model_provider\":\"\(currentProvider)\""
+            let compactNew = "\"model_provider\":\"\(targetProvider)\""
+            if line.contains(compactOld) {
+                lines[index] = line.replacingOccurrences(of: compactOld, with: compactNew)
+            } else {
+                payload["model_provider"] = targetProvider
+                object["payload"] = payload
+                guard let outputData = try? JSONSerialization.data(withJSONObject: object),
+                      let outputLine = String(data: outputData, encoding: .utf8) else {
+                    continue
+                }
+                lines[index] = outputLine
+            }
+            changed = true
+            break
+        }
+
+        var output = lines.joined(separator: "\n")
+        if hadTrailingNewline && !output.hasSuffix("\n") {
+            output.append("\n")
+        }
+        return (output, changed)
     }
 
     private func stateDbPaths() -> [String] {
@@ -1011,6 +1202,35 @@ final class SwitcherModel: ObservableObject {
             .string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
             .replacingOccurrences(of: ".", with: "-")
+    }
+
+    private func appendSwitchLog(_ message: String) {
+        do {
+            try FileManager.default.createDirectory(atPath: appStateHome, withIntermediateDirectories: true)
+            let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
+            if FileManager.default.fileExists(atPath: switchLogPath),
+               let handle = FileHandle(forWritingAtPath: switchLogPath) {
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                if let data = line.data(using: .utf8) {
+                    try handle.write(contentsOf: data)
+                }
+            } else {
+                try line.write(toFile: switchLogPath, atomically: true, encoding: .utf8)
+            }
+        } catch {
+            // Logging must not block model switching.
+        }
+    }
+
+    private func firstInteger(in text: String) -> Int? {
+        for line in text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let value = Int(trimmed) {
+                return value
+            }
+        }
+        return nil
     }
 
     private func sqlQuote(_ value: String) -> String {

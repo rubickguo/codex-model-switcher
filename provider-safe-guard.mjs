@@ -77,6 +77,79 @@ function modelForMode(targetMode) {
     : { provider: "openai", model: "gpt-5.5" };
 }
 
+function walkJsonl(dir) {
+  const output = [];
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return output;
+  }
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) output.push(...walkJsonl(fullPath));
+    if (entry.isFile() && entry.name.endsWith(".jsonl")) output.push(fullPath);
+  }
+  return output;
+}
+
+function sessionJsonlPaths() {
+  return [
+    ...walkJsonl(path.join(codexHome, "sessions")),
+    ...walkJsonl(path.join(codexHome, "archived_sessions")),
+  ].sort();
+}
+
+function rewriteSessionMetaProvider(text, targetProvider) {
+  const hadTrailingNewline = text.endsWith("\n");
+  const lines = text.split(/\n/);
+  let changed = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.includes("\"session_meta\"") || !line.includes("\"model_provider\"")) continue;
+    let object;
+    try {
+      object = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (object?.type !== "session_meta") continue;
+    const currentProvider = object?.payload?.model_provider;
+    if (typeof currentProvider !== "string" || currentProvider === targetProvider) continue;
+
+    const compactOld = `"model_provider":"${currentProvider}"`;
+    const compactNew = `"model_provider":"${targetProvider}"`;
+    if (line.includes(compactOld)) {
+      lines[index] = line.replace(compactOld, compactNew);
+    } else {
+      object.payload.model_provider = targetProvider;
+      lines[index] = JSON.stringify(object);
+    }
+    changed = true;
+    break;
+  }
+
+  let output = lines.join("\n");
+  if (hadTrailingNewline && !output.endsWith("\n")) output += "\n";
+  return { output, changed };
+}
+
+function syncSessionMetaForMode(targetMode) {
+  const { provider } = modelForMode(targetMode);
+  let scanned = 0;
+  let rows = 0;
+  for (const file of sessionJsonlPaths()) {
+    scanned += 1;
+    const original = fs.readFileSync(file, "utf8").replaceAll("\r\n", "\n");
+    const { output, changed } = rewriteSessionMetaProvider(original, provider);
+    if (!changed) continue;
+    fs.writeFileSync(file, output, "utf8");
+    rows += 1;
+  }
+  return { scanned, rows };
+}
+
 function syncThreadInventoryForMode(targetMode) {
   const { provider, model } = modelForMode(targetMode);
   let dbs = 0;
@@ -101,15 +174,16 @@ function syncThreadInventoryForMode(targetMode) {
 }
 
 function printSyncResult(label, result) {
+  const sessions = syncSessionMetaForMode(mode);
   if (result.dbs === 0) {
-    console.log(`${label} 模式同步跳过：未找到兼容的 Codex 会话库。没有创建数据库；请先打开 Codex 创建会话，或适配新版会话库结构。`);
+    console.log(`${label} 模式同步跳过：未找到兼容的 Codex 会话库。已扫描 ${sessions.scanned} 个 JSONL 会话文件，更新 ${sessions.rows} 个 session_meta。没有创建数据库；请先打开 Codex 创建会话，或适配新版会话库结构。`);
     return;
   }
 
   const skippedText = result.skipped.length > 0
     ? `，跳过 ${result.skipped.length} 个结构不兼容的库`
     : "";
-  console.log(`${label} 模式同步完成：provider=${result.provider} model=${result.model}，同步 ${result.dbs} 个线程库，覆盖 ${result.rows} 条线程${skippedText}。未扫描或复制会话正文。`);
+  console.log(`${label} 模式同步完成：provider=${result.provider} model=${result.model}，同步 ${result.dbs} 个线程库，覆盖 ${result.rows} 条线程${skippedText}；扫描 ${sessions.scanned} 个 JSONL 会话文件，更新 ${sessions.rows} 个 session_meta。未改写消息正文。`);
 }
 
 if (mode === "gpt") {

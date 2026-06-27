@@ -36,6 +36,40 @@ print_db_summary() {
   fi
 }
 
+print_session_meta_summary() {
+  print_section "Codex JSONL session_meta"
+  CODEX_HOME="$CODEX_HOME" /usr/bin/python3 - <<'PY'
+import collections
+import json
+import os
+import pathlib
+
+base = pathlib.Path(os.environ["CODEX_HOME"])
+counts = collections.Counter()
+for dirname in ("sessions", "archived_sessions"):
+    root = base / dirname
+    if not root.exists():
+        continue
+    for path in root.rglob("*.jsonl"):
+        try:
+            with path.open(errors="ignore") as handle:
+                for line in handle:
+                    if '"session_meta"' not in line or '"model_provider"' not in line:
+                        continue
+                    payload = json.loads(line).get("payload", {})
+                    counts[payload.get("model_provider", "<missing>")] += 1
+                    break
+        except Exception:
+            counts["<error>"] += 1
+
+if not counts:
+    print("No JSONL session_meta records found.")
+else:
+    for provider, count in counts.most_common():
+        print(f"{provider}|{count}")
+PY
+}
+
 print_section "Codex.app signature"
 if [[ -d "$CODEX_APP" ]]; then
   /usr/bin/codesign --verify --deep --strict "$CODEX_APP"
@@ -72,6 +106,7 @@ else
 fi
 
 print_db_summary
+print_session_meta_summary
 
 if [[ "${1:-}" == "--roundtrip-index" ]]; then
   print_section "Roundtrip index test"
@@ -87,20 +122,56 @@ if [[ "${1:-}" == "--roundtrip-index" ]]; then
   fi
 
   before="$(sqlite_count "$primary_db")"
+  before_json="$(CODEX_HOME="$CODEX_HOME" /usr/bin/python3 - <<'PY'
+import json, os, pathlib
+base=pathlib.Path(os.environ["CODEX_HOME"])
+count=0
+for d in ("sessions","archived_sessions"):
+  root=base/d
+  if root.exists():
+    for p in root.rglob("*.jsonl"):
+      for line in p.open(errors="ignore"):
+        if '"session_meta"' in line:
+          count += 1
+          break
+print(count)
+PY
+)"
   /usr/bin/env node "$SWITCHER_SCRIPT" deepseek
   after_deepseek="$(sqlite_count "$primary_db")"
   /usr/bin/env node "$SWITCHER_SCRIPT" gpt
   after_gpt="$(sqlite_count "$primary_db")"
+  after_json="$(CODEX_HOME="$CODEX_HOME" /usr/bin/python3 - <<'PY'
+import json, os, pathlib
+base=pathlib.Path(os.environ["CODEX_HOME"])
+count=0
+for d in ("sessions","archived_sessions"):
+  root=base/d
+  if root.exists():
+    for p in root.rglob("*.jsonl"):
+      for line in p.open(errors="ignore"):
+        if '"session_meta"' in line:
+          count += 1
+          break
+print(count)
+PY
+)"
 
   printf 'primary count before: %s\n' "$before"
   printf 'after DeepSeek:       %s\n' "$after_deepseek"
   printf 'after GPT:            %s\n' "$after_gpt"
+  printf 'JSONL session_meta before: %s\n' "$before_json"
+  printf 'JSONL session_meta after:  %s\n' "$after_json"
 
   if [[ "$before" != "$after_deepseek" || "$before" != "$after_gpt" ]]; then
     printf 'Thread count changed during roundtrip.\n' >&2
     exit 1
   fi
+  if [[ "$before_json" != "$after_json" ]]; then
+    printf 'JSONL session_meta count changed during roundtrip.\n' >&2
+    exit 1
+  fi
 
   print_db_summary
+  print_session_meta_summary
 fi
-
